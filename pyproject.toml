@@ -1,0 +1,36 @@
+[project]
+name = "hua-agent"
+version = "0.1.0"
+description = "两阶段花卉研究 Agent - LangGraph + FastAPI"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "langchain>=1.2.15",
+    "langchain-openai>=1.1.14",
+    "langchain-tavily>=0.2.18",
+    "langgraph>=1.1.8",
+    "langgraph-checkpoint-sqlite>=3.0.3",
+    "pydantic>=2.13.2",
+    "python-dotenv>=1.2.2",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "esdk-obs-python>=3.26.2",
+    "python-multipart>=0.0.29",
+]
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv]
+package = true
+
+[tool.setuptools.packages.find]
+include = ["hua_agent*"]
+
+[project.scripts]
+hua-server = "hua_agent.server:main"

@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+/dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Environment secrets
+.env
+
+# IDE
+.idea/
+
+# Claude
+.claude/
+
+# Runtime data
+usersdata/
