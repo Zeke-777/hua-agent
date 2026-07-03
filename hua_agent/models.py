@@ -8,6 +8,8 @@ _FIELD_MAX = 100
 def _truncate(v: str) -> str:
     if v is None:
         return ""
+    if not isinstance(v, str):
+        v = str(v)
     return v[:_FIELD_MAX]
 
 

@@ -16,18 +16,26 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     "esdk-obs-python>=3.26.2",
     "python-multipart>=0.0.29",
+    "bcrypt>=5.0.0",
+    "cachetools>=7.1.4",
 ]
-
-[[tool.uv.index]]
-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
-default = true
 
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+]
+
 [tool.uv]
 package = true
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
 
 [tool.setuptools.packages.find]
 include = ["hua_agent*"]

@@ -1,4 +1,5 @@
 import os
+import threading
 import uuid
 
 from dotenv import load_dotenv
@@ -11,18 +12,21 @@ _ENDPOINT = os.getenv("ENDPOINT")
 _BUCKET = os.getenv("BUCKET_NAME")
 
 _obs_client = None
+_obs_lock = threading.Lock()
 
 
 def _get_client():
     global _obs_client
     if _obs_client is None:
-        from obs import ObsClient
+        with _obs_lock:
+            if _obs_client is None:
+                from obs import ObsClient
 
-        _obs_client = ObsClient(
-            access_key_id=_AK,
-            secret_access_key=_SK,
-            server=_ENDPOINT,
-        )
+                _obs_client = ObsClient(
+                    access_key_id=_AK,
+                    secret_access_key=_SK,
+                    server=_ENDPOINT,
+                )
     return _obs_client
 
 

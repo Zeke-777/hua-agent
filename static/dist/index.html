@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>花卉研究 Agent</title>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <style>
 :root {
   --bg: #f5f5f5;
@@ -226,9 +227,9 @@ function renderSidebar() {
   const el = $('#session-list');
   el.innerHTML = S.sessions.map(s => `
     <div class="session-item${s.session_id === S.currentSessionId ? ' active' : ''}"
-         data-sid="${s.session_id}" data-name="${s.name}">
+         data-sid="${escHtml(s.session_id)}" data-name="${escHtml(s.name)}">
       <span class="icon">${s.image_url ? '🖼' : '🌺'}</span>
-      <span>${s.name}</span>
+      <span>${escHtml(s.name)}</span>
     </div>
   `).join('') || '<div style="padding:16px;text-align:center;color:#888;font-size:13px">暂无会话</div>';
 
@@ -242,8 +243,8 @@ function renderMessages() {
   el.innerHTML = S.messages.map(m => {
     if (m.type === 'user') return `<div class="msg user">${escHtml(m.content)}</div>`;
     if (m.type === 'flower_card') return renderFlowerCard(m.data);
-    if (m.type === 'system') return `<div class="msg system${m.error ? ' error' : ''}">${m.content}</div>`;
-    return `<div class="msg ai">${marked.parse(m.content, {breaks: true})}</div>`;
+    if (m.type === 'system') return `<div class="msg system${m.error ? ' error' : ''}">${escHtml(m.content)}</div>`;
+    return `<div class="msg ai">${marked.parse(DOMPurify.sanitize(m.content), {breaks: true})}</div>`;
   }).join('');
   el.scrollTop = el.scrollHeight;
 }

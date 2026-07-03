@@ -1,8 +1,12 @@
+import logging
+
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 from langgraph.graph import MessagesState
 
 from .models import FlowerInfo
+
+_logger = logging.getLogger(__name__)
 
 
 class Stage1State(MessagesState):
@@ -21,6 +25,7 @@ def _search_node(tavily_tool):
             result = tavily_tool.invoke(query)
             search_raw = result if isinstance(result, str) else str(result)
         except Exception:
+            _logger.exception("Tavily 搜索失败，使用回退")
             search_raw = "（搜索服务暂时不可用，请基于已有知识回答）"
 
         return {"flower_name": flower_name, "search_raw": search_raw}
@@ -48,6 +53,7 @@ def _extract_node(model):
             result = structured_model.invoke(messages)
             return {"report": result.model_dump()}
         except Exception:
+            _logger.exception("LLM 结构化输出失败，使用空报告回退")
             fallback = {
                 "名称": state.get("flower_name", ""),
                 "形态结构": "", "植物分类": "", "生长习性": "",

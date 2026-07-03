@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import sqlite3
 from contextlib import asynccontextmanager
@@ -7,7 +8,8 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
+from pydantic import BaseModel, Field
 
 from .db import (
     create_token,
@@ -21,6 +23,7 @@ from .db import (
     register_user,
     update_last_active,
     update_session_flower_info,
+    verify_session_ownership,
     verify_token,
 )
 from .models import ChatRequest, ResearchResponse
@@ -43,8 +46,11 @@ meta_conn = None
 stage1 = None
 stage2 = None
 
-# Memory state
-active_sessions: dict[str, str] = {}  # username -> current thread_id
+# Memory state — TTL cache with automatic eviction
+from cachetools import TTLCache
+
+active_sessions: TTLCache = TTLCache(maxsize=10000, ttl=3600)  # username -> current thread_id
+_active_sessions_lock = asyncio.Lock()
 
 # Thread pool for sync LangGraph calls (None = use default executor)
 _EXECUTOR = None
@@ -65,11 +71,18 @@ def _init_resources():
     )
     tavily_tool = TavilySearch(max_results=5)
 
-    os.makedirs("usersdata", exist_ok=True)
-    ckpt_conn = sqlite3.connect("usersdata/agent_memory.db", check_same_thread=False)
+    usersdata_path = os.path.join(_PROJECT_ROOT, "usersdata")
+    os.makedirs(usersdata_path, exist_ok=True)
+    print(f"Database path: {usersdata_path}")
+
+    ckpt_conn = sqlite3.connect(
+        os.path.join(usersdata_path, "agent_memory.db"), check_same_thread=False
+    )
     checkpointer = SqliteSaver(ckpt_conn)
 
-    meta_conn = sqlite3.connect("usersdata/meta.db", check_same_thread=False)
+    meta_conn = sqlite3.connect(
+        os.path.join(usersdata_path, "meta.db"), check_same_thread=False
+    )
     init_meta_db(meta_conn)
 
     stage1 = create_stage1_workflow(model, tavily_tool, checkpointer)
@@ -93,14 +106,32 @@ app.add_middleware(
 )
 
 
+class CSPMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline'"
+        )
+        return response
+
+
+app.add_middleware(CSPMiddleware)
+
+
 # ============================================================================
 # Pydantic schemas
 # ============================================================================
 
 
 class AuthRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(
+        min_length=1,
+        max_length=32,
+        pattern=r'^[a-zA-Z0-9_\-\.@]+$',
+    )
+    password: str = Field(min_length=6, max_length=128)
 
 
 class ResearchRequest(BaseModel):
@@ -136,7 +167,10 @@ class ChatResponse(BaseModel):
 
 def _identify_flower_from_url(image_url: str) -> str:
     import json as _json
+    import urllib.error as _url_error
     import urllib.request as _req
+
+    _logger = logging.getLogger(__name__)
 
     body = _json.dumps({"image_url": image_url}).encode()
     rq = _req.Request(
@@ -148,8 +182,15 @@ def _identify_flower_from_url(image_url: str) -> str:
         with _req.urlopen(rq, timeout=30) as resp:
             data = _json.loads(resp.read())
         return data["data"]["flower_name"]
+    except _url_error.URLError:
+        _logger.exception("外部花卉识别接口网络故障")
+        raise HTTPException(status_code=502, detail="外部花卉识别接口网络不可达")
+    except (KeyError, _json.JSONDecodeError):
+        _logger.exception("外部花卉识别接口返回格式异常")
+        raise HTTPException(status_code=500, detail="外部花卉识别接口返回格式异常")
     except Exception:
-        raise HTTPException(status_code=501, detail="外部花卉识别接口暂不可用")
+        _logger.exception("外部花卉识别接口未知错误")
+        raise HTTPException(status_code=500, detail="外部花卉识别接口暂不可用")
 
 
 # ============================================================================
@@ -253,7 +294,8 @@ async def api_research(body: ResearchRequest, username: str = Depends(get_curren
     sid, is_new = await asyncio.to_thread(
         get_or_create_flower_session, meta_conn, username, flower_name
     )
-    active_sessions[username] = sid
+    async with _active_sessions_lock:
+        active_sessions[username] = sid
 
     if is_new:
         reply, report = await _run_stage1(flower_name, sid)
@@ -280,15 +322,16 @@ async def api_chat(body: ChatRequest, username: str = Depends(get_current_user))
         raise HTTPException(status_code=400, detail="message 不能为空")
 
     # Resolve active session: explicit session_id > memory > latest in DB
-    current_thread = body.session_id or active_sessions.get(username)
+    async with _active_sessions_lock:
+        current_thread = body.session_id or active_sessions.get(username)
     if current_thread is None:
         current_thread = await asyncio.to_thread(get_latest_session, meta_conn, username)
     if current_thread is None:
         raise HTTPException(status_code=400, detail="没有活跃会话，请先输入花卉名称开始研究")
 
-    # Verify session ownership
-    prefix = f"{username}:"
-    if not current_thread.startswith(prefix):
+    # Verify session ownership via DB (not string prefix matching)
+    owns = await asyncio.to_thread(verify_session_ownership, meta_conn, username, current_thread)
+    if not owns:
         raise HTTPException(status_code=403, detail="无权访问该会话")
 
     reply = await _run_stage2(message, current_thread)
@@ -303,11 +346,32 @@ async def api_logout(
     if authorization.startswith("Bearer "):
         token = authorization[7:]
         await asyncio.to_thread(delete_token, meta_conn, token)
+    async with _active_sessions_lock:
+        active_sessions.pop(username, None)
     return OKResponse(ok=True, message="已登出")
 
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+
+# Magic number signatures: (header_bytes, extension)
+_MAGIC_SIGNATURES = {
+    (0xFF, 0xD8): ".jpg",
+    (0x89, 0x50, 0x4E, 0x47): ".png",
+    (0x47, 0x49, 0x46): ".gif",
+    (0x52, 0x49, 0x46, 0x46): ".webp",
+}
+
+
+def _detect_type_by_magic(data: bytes) -> str | None:
+    """Detect image type from magic bytes. Returns extension or None."""
+    if len(data) < 16:
+        return None
+    for magic, ext in _MAGIC_SIGNATURES.items():
+        if data[:len(magic)] == bytes(magic):
+            return ext
+    return None
 
 
 @app.post("/api/upload", response_model=ResearchResponse)
@@ -321,9 +385,21 @@ async def api_upload(
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext}")
+
+    # Validate MIME type
+    if file.content_type and file.content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(status_code=400, detail=f"不支持的文件类型: {file.content_type}")
+
     body = await file.read()
     if len(body) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=400, detail="文件大小超过 10MB 限制")
+
+    # Validate magic bytes
+    detected_ext = _detect_type_by_magic(body)
+    if detected_ext is None:
+        raise HTTPException(status_code=400, detail="无法识别文件格式")
+    if detected_ext != ext and not (ext == ".jpeg" and detected_ext == ".jpg"):
+        raise HTTPException(status_code=400, detail="文件内容与扩展名不匹配")
 
     loop = asyncio.get_running_loop()
     url = await loop.run_in_executor(
@@ -340,7 +416,8 @@ async def api_upload(
     sid, is_new = await asyncio.to_thread(
         get_or_create_flower_session, meta_conn, username, flower_name, image_url=url
     )
-    active_sessions[username] = sid
+    async with _active_sessions_lock:
+        active_sessions[username] = sid
 
     if is_new:
         reply, report = await _run_stage1(flower_name, sid)
@@ -353,6 +430,14 @@ async def api_upload(
         image_url, flower_info = await asyncio.to_thread(
             get_session_data, meta_conn, sid
         )
+        # If flower_info is missing for an existing session, re-run stage1
+        if flower_info is None:
+            reply, report = await _run_stage1(flower_name, sid)
+            await asyncio.to_thread(update_session_flower_info, meta_conn, sid, report, image_url=url)
+            return ResearchResponse(
+                ok=True, stage=1, session_id=sid,
+                flower_name=flower_name, flower_info=report, image_url=url,
+            )
         return ResearchResponse(
             ok=True, stage=2, session_id=sid,
             flower_name=flower_name, flower_info=flower_info,
@@ -363,16 +448,33 @@ async def api_upload(
 # Catch-all for SPA static files (must be after all /api/* routes)
 @app.get("/{path:path}")
 async def spa_fallback(path: str):
-    if ".." in path:
+    from urllib.parse import unquote
+
+    # Decode URL-encoded path to prevent encoding bypass attacks
+    decoded = unquote(path)
+
+    # Reject any path that still contains encoded characters after decoding
+    # (double-encoding attempt)
+    if "%" in decoded:
         raise HTTPException(status_code=404, detail="Not Found")
+
+    static_dir = os.path.join(_PROJECT_ROOT, "static", "dist")
+    full = os.path.join(static_dir, decoded)
+
+    # Resolve symlinks and normalize to prevent directory traversal
+    real_full = os.path.realpath(full)
+    real_static = os.path.realpath(static_dir)
+
+    if not real_full.startswith(real_static + os.sep) and real_full != real_static:
+        raise HTTPException(status_code=404, detail="Not Found")
+
     import stat as _stat
-    full = os.path.join(_PROJECT_ROOT, "static", "dist", path)
     try:
         _stat.S_IFMT(os.stat(full).st_mode)
         return FileResponse(full)
     except (FileNotFoundError, NotADirectoryError):
         pass
-    return FileResponse(os.path.join(_PROJECT_ROOT, "static", "dist", "index.html"))
+    return FileResponse(os.path.join(static_dir, "index.html"))
 
 
 def main():

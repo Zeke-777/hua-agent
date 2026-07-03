@@ -1,12 +1,15 @@
 import functools
-import hashlib
+import logging
 import secrets
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
 
 _db_lock = threading.Lock()
+
+_logger = logging.getLogger(__name__)
 
 
 def _locked(func):
@@ -21,11 +24,17 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _hash_password(password: str, salt: str) -> str:
-    return hashlib.sha256(f"{salt}:{password}".encode()).hexdigest()
+def _hash_password(password: str) -> str:
+    """Hash password using bcrypt. Returns bcrypt hash string."""
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+_ALLOWED_TABLES = {"sessions", "tokens"}
 
 
 def _get_column_names(conn: sqlite3.Connection, table: str) -> list[str]:
+    if table not in _ALLOWED_TABLES:
+        raise ValueError(f"不允许查询表: {table}")
     return [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
 
 
@@ -77,6 +86,17 @@ def init_meta_db(conn: sqlite3.Connection) -> None:
     if "expires_at" not in tokens_cols:
         conn.execute("ALTER TABLE tokens ADD COLUMN expires_at TEXT DEFAULT NULL")
 
+    # Migrate NULL expires_at tokens: set to 7 days from now
+    conn.execute(
+        "UPDATE tokens SET expires_at = ? WHERE expires_at IS NULL",
+        ((datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),),
+    )
+    # Clean up expired tokens on startup
+    conn.execute(
+        "DELETE FROM tokens WHERE expires_at IS NOT NULL AND expires_at < ?",
+        (now_iso(),),
+    )
+
     conn.commit()
 
 
@@ -93,11 +113,10 @@ def register_user(conn: sqlite3.Connection, username: str, password: str) -> tup
     if existing:
         return False, "用户名已存在"
 
-    salt = secrets.token_hex(16)
-    password_hash = _hash_password(password, salt)
+    password_hash = _hash_password(password)
     conn.execute(
         "INSERT INTO users (username, password_hash, salt, created_at) VALUES (?, ?, ?, ?)",
-        (username, password_hash, salt, now_iso()),
+        (username, password_hash, "", now_iso()),
     )
     conn.commit()
     return True, "注册成功"
@@ -110,9 +129,30 @@ def login_user(conn: sqlite3.Connection, username: str, password: str) -> tuple[
     ).fetchone()
     if not row:
         return None, "用户不存在"
-    expected_hash = _hash_password(password, row[1])
-    if expected_hash != row[0]:
+
+    stored_hash = row[0]
+    salt = row[1]
+
+    # Try bcrypt first
+    if stored_hash.startswith("$2b$") or stored_hash.startswith("$2a$") or stored_hash.startswith("$2y$"):
+        if bcrypt.checkpw(password.encode(), stored_hash.encode()):
+            return username, "登录成功"
         return None, "密码错误"
+
+    # Legacy SHA-256 fallback
+    import hashlib
+    expected = hashlib.sha256(f"{salt}:{password}".encode()).hexdigest()
+    if not secrets.compare_digest(expected, stored_hash):
+        return None, "密码错误"
+
+    # Auto-upgrade: re-hash with bcrypt
+    new_hash = _hash_password(password)
+    conn.execute(
+        "UPDATE users SET password_hash = ?, salt = '' WHERE username = ?",
+        (new_hash, username),
+    )
+    conn.commit()
+    _logger.info("Auto-upgraded password hash to bcrypt for user: %s", username)
     return username, "登录成功"
 
 
@@ -141,7 +181,8 @@ def verify_token(conn: sqlite3.Connection, token: str) -> str | None:
     if not row:
         return None
     expires_at = row[1]
-    if expires_at and expires_at < now_iso():
+    # NULL expiry = treat as expired (defense in depth)
+    if expires_at is None or expires_at < now_iso():
         return None
     return row[0]
 
@@ -268,3 +309,13 @@ def get_latest_session(conn: sqlite3.Connection, username: str) -> str | None:
         (username,),
     ).fetchone()
     return row[0] if row else None
+
+
+@_locked
+def verify_session_ownership(conn: sqlite3.Connection, username: str, session_id: str) -> bool:
+    """Verify that a session belongs to the given user via DB lookup."""
+    row = conn.execute(
+        "SELECT 1 FROM sessions WHERE username = ? AND session_id = ?",
+        (username, session_id),
+    ).fetchone()
+    return row is not None
