@@ -1,7 +1,7 @@
 """Model tests: _truncate type safety (F7)."""
 import pytest
 
-from hua_agent.models import _truncate
+from hua_agent.schemas import _truncate
 
 
 class TestTruncate:

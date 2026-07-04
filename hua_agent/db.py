@@ -55,10 +55,26 @@ def init_meta_db(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS users (
             username      TEXT PRIMARY KEY,
             password_hash TEXT NOT NULL DEFAULT '',
-            salt          TEXT NOT NULL DEFAULT '',
             created_at    TEXT NOT NULL DEFAULT ''
         )
     """)
+    # Migrate: drop salt column if it exists (bcrypt stores salt internally)
+    users_cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+    if "salt" in users_cols:
+        # SQLite doesn't support DROP COLUMN well in older versions; rebuild table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users_new (
+                username      TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL DEFAULT '',
+                created_at    TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        conn.execute(
+            "INSERT OR IGNORE INTO users_new (username, password_hash, created_at) "
+            "SELECT username, password_hash, created_at FROM users"
+        )
+        conn.execute("DROP TABLE users")
+        conn.execute("ALTER TABLE users_new RENAME TO users")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             session_id  TEXT PRIMARY KEY,
@@ -115,8 +131,8 @@ def register_user(conn: sqlite3.Connection, username: str, password: str) -> tup
 
     password_hash = _hash_password(password)
     conn.execute(
-        "INSERT INTO users (username, password_hash, salt, created_at) VALUES (?, ?, ?, ?)",
-        (username, password_hash, "", now_iso()),
+        "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+        (username, password_hash, now_iso()),
     )
     conn.commit()
     return True, "注册成功"
@@ -125,35 +141,15 @@ def register_user(conn: sqlite3.Connection, username: str, password: str) -> tup
 @_locked
 def login_user(conn: sqlite3.Connection, username: str, password: str) -> tuple[str | None, str]:
     row = conn.execute(
-        "SELECT password_hash, salt FROM users WHERE username = ?", (username,)
+        "SELECT password_hash FROM users WHERE username = ?", (username,)
     ).fetchone()
     if not row:
         return None, "用户不存在"
 
     stored_hash = row[0]
-    salt = row[1]
-
-    # Try bcrypt first
-    if stored_hash.startswith("$2b$") or stored_hash.startswith("$2a$") or stored_hash.startswith("$2y$"):
-        if bcrypt.checkpw(password.encode(), stored_hash.encode()):
-            return username, "登录成功"
-        return None, "密码错误"
-
-    # Legacy SHA-256 fallback
-    import hashlib
-    expected = hashlib.sha256(f"{salt}:{password}".encode()).hexdigest()
-    if not secrets.compare_digest(expected, stored_hash):
-        return None, "密码错误"
-
-    # Auto-upgrade: re-hash with bcrypt
-    new_hash = _hash_password(password)
-    conn.execute(
-        "UPDATE users SET password_hash = ?, salt = '' WHERE username = ?",
-        (new_hash, username),
-    )
-    conn.commit()
-    _logger.info("Auto-upgraded password hash to bcrypt for user: %s", username)
-    return username, "登录成功"
+    if bcrypt.checkpw(password.encode(), stored_hash.encode()):
+        return username, "登录成功"
+    return None, "密码错误"
 
 
 # ============================================================================

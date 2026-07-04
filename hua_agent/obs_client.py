@@ -1,33 +1,28 @@
+"""OBS image upload client — singleton connection pool."""
+
 import os
 import threading
 import uuid
 
-from dotenv import load_dotenv
+from obs import ObsClient
 
-load_dotenv()
-
-_AK = os.getenv("AK")
-_SK = os.getenv("SK")
-_ENDPOINT = os.getenv("ENDPOINT")
-_BUCKET = os.getenv("BUCKET_NAME")
-
-_obs_client = None
-_obs_lock = threading.Lock()
+_client: ObsClient | None = None
+_bucket: str = ""
+_endpoint: str = ""
+_lock = threading.Lock()
 
 
-def _get_client():
-    global _obs_client
-    if _obs_client is None:
-        with _obs_lock:
-            if _obs_client is None:
-                from obs import ObsClient
-
-                _obs_client = ObsClient(
-                    access_key_id=_AK,
-                    secret_access_key=_SK,
-                    server=_ENDPOINT,
-                )
-    return _obs_client
+def init_obs(ak: str, sk: str, endpoint: str, bucket: str) -> None:
+    """Initialize OBS client at application startup."""
+    global _client, _bucket, _endpoint
+    with _lock:
+        _client = ObsClient(
+            access_key_id=ak,
+            secret_access_key=sk,
+            server=endpoint,
+        )
+        _bucket = bucket
+        _endpoint = endpoint
 
 
 def upload_image(file_bytes: bytes, filename: str, username: str) -> str:
@@ -35,11 +30,12 @@ def upload_image(file_bytes: bytes, filename: str, username: str) -> str:
     ext = os.path.splitext(filename)[1] or ".jpg"
     object_key = f"{username}/{uuid.uuid4().hex}{ext}"
 
-    client = _get_client()
-    client.putObject(
-        bucketName=_BUCKET,
+    if _client is None:
+        raise RuntimeError("OBS client not initialized — call init_obs() at startup")
+
+    _client.putObject(
+        bucketName=_bucket,
         objectKey=object_key,
         content=file_bytes,
     )
-
-    return f"https://{_BUCKET}.{_ENDPOINT}/{object_key}"
+    return f"https://{_bucket}.{_endpoint}/{object_key}"

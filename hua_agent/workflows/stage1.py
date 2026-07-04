@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 from langgraph.graph import MessagesState
 
-from .models import FlowerInfo
+from ..schemas import FlowerInfo
 
 _logger = logging.getLogger(__name__)
 

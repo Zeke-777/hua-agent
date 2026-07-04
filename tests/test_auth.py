@@ -1,6 +1,4 @@
-"""Auth tests: password hashing and migration (F3)."""
-import hashlib
-import secrets
+"""Auth tests: registration, login, password hashing."""
 
 import bcrypt
 import pytest
@@ -9,7 +7,7 @@ from hua_agent.db import _hash_password, login_user, register_user
 
 
 class TestPasswordHashing:
-    """Verify bcrypt hashing (F3.1)."""
+    """Verify bcrypt hashing."""
 
     def test_bcrypt_format(self):
         """Password hash is a valid bcrypt string."""
@@ -22,54 +20,61 @@ class TestPasswordHashing:
         h2 = _hash_password("testpassword")
         assert h1 != h2
 
-    def test_empty_password_rejected(self):
+    def test_empty_password(self):
         """Empty password hashing still works (validation is at API level)."""
         h = _hash_password("")
         assert bcrypt.checkpw(b"", h.encode())
 
 
-class TestPasswordMigration:
-    """Verify legacy SHA-256 passwords are auto-upgraded (F3.2)."""
+class TestRegistration:
+    """Verify user registration."""
 
-    def _insert_legacy_user(self, conn, username, password):
-        """Insert a user with old-style SHA-256 hash."""
-        salt = secrets.token_hex(16)
-        pw_hash = hashlib.sha256(f"{salt}:{password}".encode()).hexdigest()
-        conn.execute(
-            "INSERT INTO users (username, password_hash, salt, created_at) "
-            "VALUES (?, ?, ?, datetime('now'))",
-            (username, pw_hash, salt),
-        )
-        conn.commit()
+    def test_register_success(self, db_conn):
+        """New user registers successfully."""
+        ok, msg = register_user(db_conn, "alice", "password123")
+        assert ok is True
+        assert "成功" in msg
 
-    def test_login_upgrades_legacy_hash(self, db_conn):
-        """Login with legacy SHA-256 hash auto-upgrades to bcrypt."""
-        self._insert_legacy_user(db_conn, "legacy_user", "correct_password")
+    def test_register_duplicate(self, db_conn):
+        """Duplicate username is rejected."""
+        register_user(db_conn, "alice", "password123")
+        ok, msg = register_user(db_conn, "alice", "another_password")
+        assert ok is False
+        assert "已存在" in msg
 
-        # Login should succeed
-        username, msg = login_user(db_conn, "legacy_user", "correct_password")
-        assert username == "legacy_user"
+    def test_register_special_chars(self, db_conn):
+        """Username with allowed special characters works."""
+        ok, msg = register_user(db_conn, "user.name-1@test", "password123")
+        assert ok is True
 
-        # Hash should now be bcrypt
+    def test_password_stored_as_bcrypt(self, db_conn):
+        """Registered user password is stored as bcrypt."""
+        register_user(db_conn, "alice", "password123")
         row = db_conn.execute(
-            "SELECT password_hash FROM users WHERE username = ?", ("legacy_user",)
+            "SELECT password_hash FROM users WHERE username = ?", ("alice",)
         ).fetchone()
         assert row[0].startswith("$2b$") or row[0].startswith("$2a$")
 
-    def test_legacy_wrong_password(self, db_conn):
-        """Wrong password with legacy hash is rejected."""
-        self._insert_legacy_user(db_conn, "legacy_user", "correct_password")
-        username, msg = login_user(db_conn, "legacy_user", "wrong_password")
-        assert username is None
 
-    def test_bcrypt_user_login(self, db_conn):
-        """New bcrypt user can login correctly."""
-        register_user(db_conn, "new_user", "password123")
-        username, msg = login_user(db_conn, "new_user", "password123")
-        assert username == "new_user"
+class TestLogin:
+    """Verify user login."""
 
-    def test_bcrypt_wrong_password(self, db_conn):
-        """Wrong password for bcrypt user is rejected."""
-        register_user(db_conn, "new_user", "password123")
-        username, msg = login_user(db_conn, "new_user", "wrong_password")
+    def test_login_success(self, db_conn):
+        """Correct password returns username."""
+        register_user(db_conn, "alice", "password123")
+        username, msg = login_user(db_conn, "alice", "password123")
+        assert username == "alice"
+        assert msg == "登录成功"
+
+    def test_login_wrong_password(self, db_conn):
+        """Wrong password returns None."""
+        register_user(db_conn, "alice", "password123")
+        username, msg = login_user(db_conn, "alice", "wrong_password")
         assert username is None
+        assert "错误" in msg
+
+    def test_login_nonexistent_user(self, db_conn):
+        """Non-existent user returns None."""
+        username, msg = login_user(db_conn, "nobody", "password123")
+        assert username is None
+        assert "不存在" in msg

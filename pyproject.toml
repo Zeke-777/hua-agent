@@ -11,6 +11,7 @@ dependencies = [
     "langgraph>=1.1.8",
     "langgraph-checkpoint-sqlite>=3.0.3",
     "pydantic>=2.13.2",
+    "pydantic-settings>=2.0",
     "python-dotenv>=1.2.2",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
@@ -28,6 +29,7 @@ build-backend = "setuptools.build_meta"
 dev = [
     "httpx>=0.28.1",
     "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
 ]
 
 [tool.uv]
@@ -41,4 +43,4 @@ default = true
 include = ["hua_agent*"]
 
 [project.scripts]
-hua-server = "hua_agent.server:main"
+hua-server = "hua_agent.main:main"
