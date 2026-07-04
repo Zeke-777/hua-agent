@@ -78,6 +78,9 @@ class TestPathTraversal:
         assert resp.status_code == 404
 
     def test_drive_letter_rejected(self, client):
+        import platform
+        if platform.system() != "Windows":
+            pytest.skip("C:/ is only an absolute path on Windows")
         resp = client.get("/C:/boot.ini")
         assert resp.status_code == 404
 
