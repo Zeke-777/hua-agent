@@ -20,3 +20,4 @@ wheels/
 
 # Runtime data
 usersdata/
+.coverage
