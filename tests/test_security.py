@@ -74,6 +74,9 @@ class TestPathTraversal:
         assert resp.status_code == 200
 
     def test_encoded_backslash_rejected(self, client):
+        import platform
+        if platform.system() != "Windows":
+            pytest.skip(r"%5C (\) is a path separator only on Windows")
         resp = client.get("/%5Cwindows%5Cwin.ini")
         assert resp.status_code == 404
 
