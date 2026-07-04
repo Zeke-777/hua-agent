@@ -1,6 +1,6 @@
 # 🌸 花卉研究 Agent
 
-[![Test](https://github.com/Zeke-777/hua-agent/actions/workflows/test.yml/badge.svg)](https://github.com/Zeke-777/hua-agent/actions/workflows/test.yml)
+[![Test](https://github.com/Zeke-777/hua-agent/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/Zeke-777/hua-agent/actions/workflows/test.yml)
 [![Coverage](https://img.shields.io/badge/coverage-85%25-brightgreen)](https://github.com/Zeke-777/hua-agent)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://www.python.org/)
 
