@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .config import Settings
 from .db import init_meta_db
@@ -36,7 +37,7 @@ def _init_resources(app: FastAPI, settings: Settings):
         temperature=0,
         extra_body={"thinking": {"type": "disabled"}},
     )
-    tavily_tool = TavilySearch(max_results=5)
+    tavily_tool = TavilySearch(max_results=5, tavily_api_key=settings.tavily_api_key)
 
     usersdata_path = os.path.join(_PROJECT_ROOT, "usersdata")
     os.makedirs(usersdata_path, exist_ok=True)
@@ -92,6 +93,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.add_middleware(CSPMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
+
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
     from .routes.auth import router as auth_router
     from .routes.research import router as research_router
